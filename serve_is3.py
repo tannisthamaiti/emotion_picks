@@ -182,11 +182,11 @@ def predict():
     if not detected:
         return jsonify({"landmarks": None, "face_count": 0, "width": w, "height": h})
 
-    lms = detected[0]  # (68, 2) — 0-indexed, matching point IDs 36-59
+    lms = detected[0]  # (68, 2) — 0-indexed; IDs 31-35 = nose, 36-59 = eyes + outer mouth
     landmarks = {
         str(i): {"x": max(0.0, min(float(w), float(lms[i][0]))),
                  "y": max(0.0, min(float(h), float(lms[i][1])))}
-        for i in range(36, 60)
+        for i in range(31, 60)
     }
     return jsonify({"landmarks": landmarks, "face_count": len(detected), "width": w, "height": h})
 
