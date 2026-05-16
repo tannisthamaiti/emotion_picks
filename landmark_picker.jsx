@@ -38,8 +38,6 @@ const GROUPS = [
 
 const storageKey = (session, frame) => `lm24pts_${session}_${frame}`;
 
-// ── upload helpers ────────────────────────────────────────────────────────────
-
 function uploadIS3(session, file, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -58,42 +56,39 @@ function uploadIS3(session, file, onProgress) {
   });
 }
 
-// ── component ─────────────────────────────────────────────────────────────────
-
 export default function App() {
-  const [session,     setSession]   = useState("PRE");
-  const [frameIdx,    setFrameIdx]  = useState(0);
-  const [totalFrames, setTotal]     = useState(0);
-  const [imgNatW,     setImgNatW]   = useState(640);
-  const [imgNatH,     setImgNatH]   = useState(480);
-  const [imgSrc,      setImgSrc]    = useState("");
-  const [sessionReady, setReady]    = useState(false);
+  const [session,      setSession]   = useState("PRE");
+  const [frameIdx,     setFrameIdx]  = useState(0);
+  const [totalFrames,  setTotal]     = useState(0);
+  const [imgNatW,      setImgNatW]   = useState(640);
+  const [imgNatH,      setImgNatH]   = useState(480);
+  const [imgSrc,       setImgSrc]    = useState("");
+  const [sessionReady, setReady]     = useState(false);
 
-  const [coords,      setCoords]    = useState({});
-  const [suggestions, setSugg]      = useState({});
-  const [sel,         setSel]       = useState(36);
+  const [coords,       setCoords]    = useState({});
+  const [sel,          setSel]       = useState(36);
 
-  const [imgLoaded,   setLoaded]    = useState(false);
-  const [wrapSize,    setWrapSize]  = useState({ w: 0, h: 0 });
-  const [copied,      setCopied]    = useState(false);
-  const [detecting,   setDetecting] = useState(false);
-  const [fanMsg,      setFanMsg]    = useState("");
-  const [autoDetect,  setAutoDetect]= useState(false);
+  const [imgLoaded,    setLoaded]    = useState(false);
+  const [wrapSize,     setWrapSize]  = useState({ w: 0, h: 0 });
+  const [copied,       setCopied]    = useState(false);
 
-  // upload state per session: null=idle, 0-100=uploading, "error"=failed
-  const [uploadState, setUploadState] = useState({ PRE: null, POST: null });
-  const [dragOver,    setDragOver]    = useState(false);
+  // FAN — auto-detect on by default, results land directly as confirmed coords
+  const [autoDetect,   setAutoDetect]= useState(true);
+  const [detecting,    setDetecting] = useState(false);
+  const [fanMsg,       setFanMsg]    = useState("");
+
+  const [uploadState,  setUploadState] = useState({ PRE: null, POST: null });
+  const [dragOver,     setDragOver]    = useState(false);
   const fileInputRef = useRef(null);
-
   const imgRef  = useRef(null);
   const wrapRef = useRef(null);
 
-  // ── fetch session info ────────────────────────────────────────────────────
+  // ── session info ─────────────────────────────────────────────────────────
   const fetchInfo = useCallback((sess) => {
     fetch(`${SERVER}/info?session=${sess}`)
       .then(r => r.json())
       .then(d => {
-        setReady(d.ready);
+        setReady(!!d.ready);
         setTotal(d.total_frames || 0);
         if (d.width)  setImgNatW(d.width);
         if (d.height) setImgNatH(d.height);
@@ -110,19 +105,21 @@ export default function App() {
     setImgSrc(`${SERVER}/frame?session=${session}&frame=${frameIdx}&_t=${Date.now()}`);
   }, [session, frameIdx, sessionReady]);
 
-  // ── load stored coords on frame / session switch ──────────────────────────
+  // ── load stored coords on frame/session switch ────────────────────────────
   useEffect(() => {
-    setSugg({}); setFanMsg("");
+    setFanMsg("");
     try {
       const saved = localStorage.getItem(storageKey(session, frameIdx));
       setCoords(saved ? JSON.parse(saved) : {});
     } catch { setCoords({}); }
   }, [session, frameIdx]);
 
-  // ── auto-detect ───────────────────────────────────────────────────────────
+  // ── auto-detect: runs when frame finishes loading (if no saved coords) ────
   useEffect(() => {
-    if (autoDetect && imgLoaded) detectFace();
-  }, [imgLoaded, autoDetect]); // eslint-disable-line
+    if (!autoDetect || !imgLoaded) return;
+    const saved = localStorage.getItem(storageKey(session, frameIdx));
+    if (!saved) detectFace();          // only auto-detect on frames not yet annotated
+  }, [imgLoaded]);                     // eslint-disable-line
 
   // ── resize observer ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -152,6 +149,31 @@ export default function App() {
     try { localStorage.setItem(storageKey(sess, fi), JSON.stringify(c)); } catch {}
   }, [session, frameIdx]);
 
+  // ── FAN detection → places coords directly ────────────────────────────────
+  const detectFace = async () => {
+    setDetecting(true); setFanMsg("Detecting…");
+    try {
+      const d = await fetch(`${SERVER}/predict?session=${session}&frame=${frameIdx}`)
+        .then(r => r.json());
+      if (!d.landmarks) {
+        setFanMsg("No face detected — click to place manually");
+        return;
+      }
+      const norm = {};
+      Object.entries(d.landmarks).forEach(([id, { x, y }]) => {
+        norm[parseInt(id)] = { x: x / d.width, y: y / d.height };
+      });
+      setCoords(norm);
+      persist(norm);
+      setSel(36);
+      setFanMsg(`FAN placed ${Object.keys(norm).length} pts — click any to correct`);
+    } catch {
+      setFanMsg("Detection error");
+    } finally {
+      setDetecting(false);
+    }
+  };
+
   // ── upload ────────────────────────────────────────────────────────────────
   const handleUpload = async (sess, file) => {
     if (!file) return;
@@ -175,47 +197,10 @@ export default function App() {
     }
   };
 
-  const onFileInput = e => {
-    handleUpload(session, e.target.files?.[0]);
-    e.target.value = "";
-  };
+  const onFileInput = e => { handleUpload(session, e.target.files?.[0]); e.target.value = ""; };
+  const onDrop = e => { e.preventDefault(); setDragOver(false); handleUpload(session, e.dataTransfer.files?.[0]); };
 
-  const onDrop = e => {
-    e.preventDefault(); setDragOver(false);
-    handleUpload(session, e.dataTransfer.files?.[0]);
-  };
-
-  // ── FAN detection ─────────────────────────────────────────────────────────
-  const detectFace = async () => {
-    setDetecting(true); setFanMsg("");
-    try {
-      const d = await fetch(`${SERVER}/predict?session=${session}&frame=${frameIdx}`)
-        .then(r => r.json());
-      if (!d.landmarks) { setSugg({}); setFanMsg("No face detected"); return; }
-      const norm = {};
-      Object.entries(d.landmarks).forEach(([id, { x, y }]) => {
-        norm[parseInt(id)] = { x: x / d.width, y: y / d.height };
-      });
-      setSugg(norm);
-      setFanMsg(`${d.face_count} face${d.face_count !== 1 ? "s" : ""} — ${Object.keys(norm).length} pts suggested`);
-    } catch { setFanMsg("Detection failed"); }
-    finally  { setDetecting(false); }
-  };
-
-  const acceptAll = () => {
-    const next = { ...coords };
-    Object.entries(suggestions).forEach(([id, pos]) => { if (!next[+id]) next[+id] = pos; });
-    setCoords(next); persist(next); setSugg({});
-  };
-
-  const acceptOne = id => {
-    if (!suggestions[id]) return;
-    const next = { ...coords, [id]: suggestions[id] };
-    setCoords(next); persist(next);
-    setSugg(s => { const n = { ...s }; delete n[id]; return n; });
-  };
-
-  // ── landmark placement ────────────────────────────────────────────────────
+  // ── landmark placement (manual correction) ────────────────────────────────
   const handleClick = e => {
     const rect = imgRef.current.getBoundingClientRect();
     const nx = (e.clientX - rect.left) / rect.width;
@@ -236,8 +221,9 @@ export default function App() {
     setCoords(next); persist(next); setSel(id);
   };
 
-  const reset = () => { setCoords({}); persist({}); setSugg({}); setSel(36); };
+  const reset = () => { setCoords({}); persist({}); setSel(36); setFanMsg(""); };
 
+  // ── export ────────────────────────────────────────────────────────────────
   const exportJSON = () => {
     const out = {};
     POINTS.forEach(p => {
@@ -258,12 +244,11 @@ export default function App() {
   };
 
   // ── derived ───────────────────────────────────────────────────────────────
-  const placed   = Object.keys(coords).length;
-  const pending  = Object.keys(suggestions).filter(id => !coords[+id]).length;
-  const selPt    = POINTS.find(p => p.id === sel);
+  const placed  = Object.keys(coords).length;
+  const selPt   = POINTS.find(p => p.id === sel);
   const sx = nx => nx * wrapSize.w;
   const sy = ny => ny * wrapSize.h;
-  const upState  = uploadState[session];
+  const upState = uploadState[session];
 
   const groupPoly = g => {
     const pts = POINTS.filter(p => p.g === g && coords[p.id]);
@@ -273,7 +258,7 @@ export default function App() {
 
   const Z = { fontFamily: "system-ui,sans-serif", color: "var(--color-text-primary,#e8e8e8)", userSelect: "none" };
 
-  // ── upload zone (shown when session has no file loaded) ───────────────────
+  // ── upload zone ───────────────────────────────────────────────────────────
   const UploadZone = (
     <div
       onDrop={onDrop}
@@ -285,40 +270,28 @@ export default function App() {
         justifyContent: "center", minHeight: 280, borderRadius: 10,
         border: `2px dashed ${dragOver ? "#5B3FE8" : "rgba(128,128,128,.3)"}`,
         background: dragOver ? "rgba(91,63,232,.08)" : "rgba(128,128,128,.04)",
-        cursor: upState === null ? "pointer" : "default",
-        transition: "border-color .15s, background .15s",
-        gap: 12,
+        cursor: upState === null ? "pointer" : "default", gap: 12,
       }}>
-
-      {upState === null && (
-        <>
-          <div style={{ fontSize: 36 }}>⬆</div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>Upload {session} IS3 file</div>
-          <div style={{ fontSize: 12, opacity: .45, textAlign: "center", maxWidth: 240 }}>
-            Click or drag your FLIR .IS3 thermal video here
-          </div>
-        </>
-      )}
-
-      {typeof upState === "number" && (
-        <>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>Uploading {session}…  {upState}%</div>
-          <div style={{ width: 220, height: 5, background: "rgba(128,128,128,.2)", borderRadius: 3 }}>
-            <div style={{ width: `${upState}%`, height: "100%", background: "#5B3FE8",
-              borderRadius: 3, transition: "width .1s" }} />
-          </div>
-          <div style={{ fontSize: 11, opacity: .4 }}>Do not close this page</div>
-        </>
-      )}
-
-      {upState === "error" && (
-        <>
-          <div style={{ fontSize: 13, color: "#e55", fontWeight: 600 }}>Upload failed</div>
-          <button onClick={e => { e.stopPropagation(); setUploadState(s => ({ ...s, [session]: null })); }}
-            style={{ fontSize: 12 }}>Try again</button>
-        </>
-      )}
-
+      {upState === null && <>
+        <div style={{ fontSize: 36 }}>⬆</div>
+        <div style={{ fontSize: 15, fontWeight: 600 }}>Upload {session} IS3 file</div>
+        <div style={{ fontSize: 12, opacity: .45, textAlign: "center", maxWidth: 240 }}>
+          Click or drag your FLIR .IS3 thermal video here
+        </div>
+      </>}
+      {typeof upState === "number" && <>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Uploading {session}… {upState}%</div>
+        <div style={{ width: 220, height: 5, background: "rgba(128,128,128,.2)", borderRadius: 3 }}>
+          <div style={{ width: `${upState}%`, height: "100%", background: "#5B3FE8",
+            borderRadius: 3, transition: "width .1s" }} />
+        </div>
+        <div style={{ fontSize: 11, opacity: .4 }}>Do not close this page</div>
+      </>}
+      {upState === "error" && <>
+        <div style={{ fontSize: 13, color: "#e55", fontWeight: 600 }}>Upload failed</div>
+        <button onClick={e => { e.stopPropagation(); setUploadState(s => ({ ...s, [session]: null })); }}
+          style={{ fontSize: 12 }}>Try again</button>
+      </>}
       <input ref={fileInputRef} type="file" accept=".IS3,.is3"
         style={{ display: "none" }} onChange={onFileInput} />
     </div>
@@ -327,54 +300,43 @@ export default function App() {
   return (
     <div style={{ ...Z, padding: "12px 0" }}>
 
-      {/* ── session tabs ──────────────────────────────────────────────────── */}
+      {/* ── session tabs ─────────────────────────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-        {SESSIONS.map(s => {
-          const loaded = s === session ? sessionReady : null;
-          return (
-            <button key={s} onClick={() => { setSession(s); setFrameIdx(0); }}
-              style={{ fontSize: 12, fontWeight: 600, padding: "4px 16px", borderRadius: 6,
-                background: session === s ? "#378ADD" : "rgba(128,128,128,.12)",
-                color: session === s ? "#fff" : "inherit", border: "none", cursor: "pointer",
-                position: "relative" }}>
-              {s}
-              {/* green dot if this session has a file */}
-              {loaded && (
-                <span style={{ position: "absolute", top: 2, right: 2, width: 6, height: 6,
-                  borderRadius: "50%", background: "#1D9E75" }} />
-              )}
-            </button>
-          );
-        })}
-
+        {SESSIONS.map(s => (
+          <button key={s} onClick={() => { setSession(s); setFrameIdx(0); }}
+            style={{ fontSize: 12, fontWeight: 600, padding: "4px 16px", borderRadius: 6,
+              background: session === s ? "#378ADD" : "rgba(128,128,128,.12)",
+              color: session === s ? "#fff" : "inherit", border: "none", cursor: "pointer",
+              position: "relative" }}>
+            {s}
+          </button>
+        ))}
         {sessionReady && (
           <span style={{ fontSize: 11, opacity: .4, marginLeft: 4 }}>
-            {imgNatW}×{imgNatH} · {totalFrames} frames · 9 fps
+            {imgNatW}×{imgNatH} · {totalFrames} frames
           </span>
         )}
-
-        {/* re-upload button when file already loaded */}
         {sessionReady && (
-          <button onClick={() => fileInputRef.current?.click()}
-            style={{ fontSize: 11, padding: "2px 8px", borderRadius: 5,
-              marginLeft: "auto", opacity: .5, cursor: "pointer" }}>
-            ↩ Replace file
-          </button>
+          <>
+            <button onClick={() => fileInputRef.current?.click()}
+              style={{ fontSize: 11, padding: "2px 8px", borderRadius: 5,
+                marginLeft: "auto", opacity: .5, cursor: "pointer" }}>
+              ↩ Replace file
+            </button>
+            <input ref={fileInputRef} type="file" accept=".IS3,.is3"
+              style={{ display: "none" }} onChange={onFileInput} />
+          </>
         )}
-        <input ref={fileInputRef} type="file" accept=".IS3,.is3"
-          style={{ display: "none" }} onChange={onFileInput} />
       </div>
 
-      {/* ── show upload zone OR picker ────────────────────────────────────── */}
       {!sessionReady ? (
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+        <div style={{ display: "flex", gap: 10 }}>
           {UploadZone}
-          {/* empty sidebar placeholder */}
           <div style={{ width: 170, flexShrink: 0 }} />
         </div>
       ) : (
         <>
-          {/* ── frame slider ────────────────────────────────────────────── */}
+          {/* ── frame slider ──────────────────────────────────────────────── */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <button onClick={() => setFrameIdx(f => Math.max(f - 1, 0))}
               style={{ fontSize: 12, padding: "2px 8px" }}>◀</button>
@@ -388,46 +350,39 @@ export default function App() {
             </span>
           </div>
 
-          {/* ── FAN detect bar ───────────────────────────────────────────── */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10,
+          {/* ── FAN toolbar ───────────────────────────────────────────────── */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10,
             padding: "7px 12px", background: "rgba(128,128,128,.07)", borderRadius: 8,
             border: "1px solid rgba(128,128,128,.15)" }}>
+
             <button onClick={detectFace} disabled={detecting}
               style={{ fontSize: 12, fontWeight: 600, padding: "4px 14px", borderRadius: 6,
                 background: detecting ? "rgba(128,128,128,.2)" : "#5B3FE8",
-                color: "#fff", border: "none", cursor: detecting ? "default" : "pointer", minWidth: 100 }}>
-              {detecting ? "Detecting…" : "⚡ Detect face"}
+                color: "#fff", border: "none", cursor: detecting ? "default" : "pointer",
+                minWidth: 110 }}>
+              {detecting ? "Detecting…" : "⚡ Re-detect"}
             </button>
-            <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11,
-              cursor: "pointer", opacity: .7 }}>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 5,
+              fontSize: 11, cursor: "pointer", opacity: .7 }}>
               <input type="checkbox" checked={autoDetect}
-                onChange={e => setAutoDetect(e.target.checked)} style={{ accentColor: "#5B3FE8" }} />
-              auto on each frame
+                onChange={e => setAutoDetect(e.target.checked)}
+                style={{ accentColor: "#5B3FE8" }} />
+              auto on new frames
             </label>
-            {fanMsg && <span style={{ fontSize: 11, opacity: .6 }}>{fanMsg}</span>}
-            {pending > 0 && (
-              <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
-                <span style={{ fontSize: 11, opacity: .5, alignSelf: "center" }}>
-                  {pending} unaccepted
-                </span>
-                <button onClick={acceptAll} style={{ fontSize: 11, padding: "3px 10px",
-                  borderRadius: 5, background: "#1D9E75", color: "#fff", border: "none",
-                  cursor: "pointer" }}>Accept all</button>
-                <button onClick={() => { setSugg({}); setFanMsg(""); }}
-                  style={{ fontSize: 11, padding: "3px 8px", borderRadius: 5,
-                    background: "rgba(128,128,128,.15)", border: "none", cursor: "pointer" }}>
-                  Dismiss
-                </button>
-              </div>
+
+            {fanMsg && (
+              <span style={{ fontSize: 11, opacity: .6 }}>{fanMsg}</span>
             )}
           </div>
 
-          {/* ── header ──────────────────────────────────────────────────── */}
+          {/* ── header ────────────────────────────────────────────────────── */}
           <div style={{ display: "flex", justifyContent: "space-between",
             alignItems: "center", marginBottom: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontSize: 14, fontWeight: 600 }}>Landmark picker</span>
-              <span style={{ background: placed === 24 ? "#1D9E75" : "rgba(128,128,128,.12)",
+              <span style={{
+                background: placed === 24 ? "#1D9E75" : "rgba(128,128,128,.12)",
                 color: placed === 24 ? "#fff" : "inherit",
                 fontSize: 11, padding: "2px 8px", borderRadius: 10, fontWeight: 500 }}>
                 {placed}/24
@@ -449,13 +404,12 @@ export default function App() {
 
           {/* active point hint */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px",
-            background: "rgba(128,128,128,.07)", borderRadius: 8, marginBottom: 10, fontSize: 12,
-            border: `1.5px solid ${selPt?.color}40` }}>
+            background: "rgba(128,128,128,.07)", borderRadius: 8, marginBottom: 10,
+            fontSize: 12, border: `1.5px solid ${selPt?.color}40` }}>
             <span style={{ width: 10, height: 10, borderRadius: "50%", background: selPt?.color,
               flexShrink: 0, boxShadow: `0 0 0 3px ${selPt?.color}30` }} />
-            <span style={{ opacity: .5 }}>Click image →</span>
+            <span style={{ opacity: .5 }}>Select point in sidebar → click image to correct</span>
             <span style={{ fontWeight: 600, color: selPt?.color }}>pt {sel} · {selPt?.label}</span>
-            <span style={{ opacity: .35, fontSize: 11 }}>({selPt?.gname})</span>
             {coords[sel] && (
               <span style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 11, opacity: .4 }}>
                 ({Math.round(coords[sel].x * imgNatW)}, {Math.round(coords[sel].y * imgNatH)})
@@ -464,10 +418,12 @@ export default function App() {
           </div>
 
           <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+
             {/* image canvas */}
             <div ref={wrapRef} style={{ flex: 1, position: "relative", cursor: "crosshair",
               lineHeight: 0, borderRadius: 8, overflow: "hidden", background: "#111" }}
               onClick={handleClick}>
+
               {imgSrc && (
                 <img ref={imgRef} src={imgSrc} alt={`${session} frame ${frameIdx}`}
                   style={{ width: "100%", display: "block" }} draggable={false}
@@ -476,44 +432,49 @@ export default function App() {
                     setWrapSize({ w: imgRef.current.offsetWidth, h: imgRef.current.offsetHeight });
                   }} />
               )}
-              {imgLoaded && wrapSize.w > 0 && (
+
+              {/* detecting overlay */}
+              {detecting && (
+                <div style={{ position: "absolute", inset: 0, display: "flex",
+                  alignItems: "center", justifyContent: "center",
+                  background: "rgba(0,0,0,.45)", borderRadius: 8 }}>
+                  <span style={{ fontSize: 13, color: "#fff", fontWeight: 600 }}>
+                    ⚡ Detecting face…
+                  </span>
+                </div>
+              )}
+
+              {imgLoaded && wrapSize.w > 0 && !detecting && (
                 <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
                   pointerEvents: "none" }}>
+
+                  {/* group polygon fills */}
                   {GROUPS.map(g => {
                     const poly = groupPoly(g.id);
-                    return poly ? <polygon key={g.id} points={poly} fill={g.color + "18"}
-                      stroke={g.color} strokeWidth="1.5" strokeLinejoin="round" /> : null;
+                    return poly ? (
+                      <polygon key={g.id} points={poly} fill={g.color + "18"}
+                        stroke={g.color} strokeWidth="1.5" strokeLinejoin="round" />
+                    ) : null;
                   })}
-                  {/* ghost suggestions */}
-                  {POINTS.map(pt => {
-                    const sug = suggestions[pt.id];
-                    if (!sug || coords[pt.id]) return null;
-                    const cx = sx(sug.x), cy = sy(sug.y);
-                    return (
-                      <g key={`sug-${pt.id}`}>
-                        <circle cx={cx} cy={cy} r="11" fill="none" stroke={pt.color}
-                          strokeWidth="1" strokeDasharray="3,3" opacity=".5" />
-                        <circle cx={cx} cy={cy} r="5" fill={pt.color + "55"}
-                          stroke={pt.color} strokeWidth="1.5" opacity=".8" />
-                        <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central"
-                          style={{ fontSize: "7px", fill: pt.color, fontWeight: 700,
-                            fontFamily: "monospace", opacity: .7 }}>{pt.id}</text>
-                      </g>
-                    );
-                  })}
-                  {/* confirmed landmarks */}
+
+                  {/* landmark dots */}
                   {POINTS.map(pt => {
                     if (!coords[pt.id]) return null;
-                    const cx = sx(coords[pt.id].x), cy = sy(coords[pt.id].y), isSel = pt.id === sel;
+                    const cx = sx(coords[pt.id].x), cy = sy(coords[pt.id].y);
+                    const isSel = pt.id === sel;
                     return (
                       <g key={pt.id}>
-                        {isSel && <circle cx={cx} cy={cy} r="13" fill="none" stroke={pt.color}
-                          strokeWidth="1.5" strokeDasharray="3,2" opacity=".9" />}
+                        {isSel && (
+                          <circle cx={cx} cy={cy} r="13" fill="none" stroke={pt.color}
+                            strokeWidth="1.5" strokeDasharray="3,2" opacity=".9" />
+                        )}
                         <circle cx={cx} cy={cy} r={isSel ? 7 : 5} fill={pt.color}
                           stroke="rgba(255,255,255,.85)" strokeWidth="1.5" />
                         <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central"
                           style={{ fontSize: "8px", fill: "#fff", fontWeight: 700,
-                            fontFamily: "monospace" }}>{pt.id}</text>
+                            fontFamily: "monospace" }}>
+                          {pt.id}
+                        </text>
                       </g>
                     );
                   })}
@@ -526,41 +487,33 @@ export default function App() {
               {GROUPS.map(g => {
                 const gpts = POINTS.filter(p => p.g === g.id);
                 const gp   = gpts.filter(p => coords[p.id]).length;
-                const gsg  = gpts.filter(p => suggestions[p.id] && !coords[p.id]).length;
                 return (
                   <div key={g.id} style={{ marginBottom: 8 }}>
                     <div style={{ fontSize: 10, fontWeight: 600, color: g.color,
                       padding: "3px 4px", display: "flex", justifyContent: "space-between",
                       letterSpacing: .3 }}>
                       <span>{g.name}</span>
-                      <span style={{ opacity: .7 }}>
-                        {gp}/{gpts.length}
-                        {gsg > 0 && <span style={{ color: "#aaa", marginLeft: 4 }}>+{gsg}✦</span>}
-                      </span>
+                      <span style={{ opacity: .7 }}>{gp}/{gpts.length}</span>
                     </div>
                     {gpts.map(pt => {
-                      const hasSug = !!suggestions[pt.id] && !coords[pt.id];
                       const isConf = !!coords[pt.id];
+                      const isSel  = sel === pt.id;
                       return (
-                        <div key={pt.id}
-                          onClick={() => { setSel(pt.id); if (hasSug) acceptOne(pt.id); }}
+                        <div key={pt.id} onClick={() => setSel(pt.id)}
                           style={{ display: "flex", alignItems: "center", gap: 5,
                             padding: "3px 6px", borderRadius: 5, cursor: "pointer",
                             marginBottom: 1,
-                            background: sel === pt.id ? g.color + "20"
-                              : hasSug ? g.color + "0D" : "transparent",
-                            border: `1px solid ${sel === pt.id ? g.color + "80"
-                              : hasSug ? g.color + "40" : "transparent"}`,
+                            background: isSel ? g.color + "20" : "transparent",
+                            border: `1px solid ${isSel ? g.color + "80" : "transparent"}`,
                             fontSize: 11 }}>
                           <span style={{ width: 7, height: 7, borderRadius: "50%",
-                            background: isConf ? g.color : "transparent",
-                            border: hasSug ? `1.5px dashed ${g.color}` : isConf ? "none" : "1.5px solid rgba(128,128,128,.2)",
+                            background: isConf ? g.color : "rgba(128,128,128,.2)",
                             flexShrink: 0 }} />
-                          <span style={{ color: isConf ? g.color : hasSug ? g.color + "bb"
-                            : "rgba(128,128,128,.5)", fontWeight: 600, minWidth: 22 }}>{pt.id}</span>
-                          <span style={{ opacity: .45, fontSize: 10, flex: 1, overflow: "hidden",
-                            textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pt.label}</span>
-                          {hasSug && <span style={{ fontSize: 10, color: g.color, opacity: .7 }}>✦</span>}
+                          <span style={{ color: isConf ? g.color : "rgba(128,128,128,.5)",
+                            fontWeight: 600, minWidth: 22 }}>{pt.id}</span>
+                          <span style={{ opacity: .45, fontSize: 10, flex: 1,
+                            overflow: "hidden", textOverflow: "ellipsis",
+                            whiteSpace: "nowrap" }}>{pt.label}</span>
                           {isConf && (
                             <span onClick={e => del(pt.id, e)}
                               style={{ opacity: .3, cursor: "pointer", fontSize: 14,
@@ -572,11 +525,12 @@ export default function App() {
                   </div>
                 );
               })}
-              <div style={{ marginTop: 8, padding: "6px 8px", background: "rgba(128,128,128,.08)",
-                borderRadius: 6, fontSize: 10, opacity: .5, lineHeight: 1.6 }}>
-                ● confirmed &nbsp;◌ suggested<br />
-                click ✦ to accept one<br />
-                ← → frame &nbsp; Shift±10
+              <div style={{ marginTop: 8, padding: "6px 8px",
+                background: "rgba(128,128,128,.08)", borderRadius: 6,
+                fontSize: 10, opacity: .5, lineHeight: 1.6 }}>
+                FAN places all 24 pts automatically.<br />
+                Select a point → click image to correct.<br />
+                ← → navigate &nbsp; Shift ±10
               </div>
             </div>
           </div>
@@ -587,7 +541,7 @@ export default function App() {
               background: "rgba(128,128,128,.06)", borderRadius: 8, fontSize: 11 }}>
               <div style={{ fontWeight: 600, marginBottom: 5, opacity: .4,
                 fontSize: 10, letterSpacing: .3 }}>
-                CONFIRMED — {session} frame {frameIdx} — px ({imgNatW}×{imgNatH}, top-left)
+                {session} · frame {frameIdx} · {imgNatW}×{imgNatH}px
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "3px 12px" }}>
                 {POINTS.filter(p => coords[p.id]).map(p => (

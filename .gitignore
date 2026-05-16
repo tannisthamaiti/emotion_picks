@@ -22,3 +22,4 @@ Thumbs.db
 # Data — IS3 files are large and mounted as a volume in production
 *.IS3
 *.is3
+*.png
