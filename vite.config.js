@@ -9,6 +9,7 @@ export default defineConfig({
       "/frame":   "http://localhost:5174",
       "/info":    "http://localhost:5174",
       "/predict": "http://localhost:5174",
+      "/upload":  "http://localhost:5174",
     },
   },
 });

@@ -5,15 +5,9 @@ services:
       context: .
       dockerfile: Dockerfile.api
     volumes:
-      # Mount the IS3 files into the container.
-      # On the Hetzner server, upload the THERMAL/ folder and set THERMAL_DIR:
-      #   THERMAL_DIR=/path/to/THERMAL docker compose up -d
-      - type: bind
-        source: ${THERMAL_DIR:-/data/thermal}
-        target: /data/thermal
-        read_only: true
+      # Named volume — IS3 files uploaded via the browser are persisted here
+      - uploads:/data/uploads
     restart: unless-stopped
-    # not exposed publicly — Nginx reaches it on the internal network
 
   web:
     build:
@@ -24,3 +18,6 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+
+volumes:
+  uploads:
