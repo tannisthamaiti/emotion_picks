@@ -1,0 +1,30 @@
+FROM python:3.11-slim
+
+# OpenCV headless runtime deps
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install CPU-only torch first so face-alignment doesn't pull a CUDA build (~200 MB vs ~2 GB)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download the FAN model (~90 MB) into the image layer so first /predict is instant
+RUN python -c "
+import face_alignment
+fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, device='cpu')
+print('FAN model cached.')
+"
+
+COPY serve_is3.py ./
+
+ENV THERMAL_BASE=/data/thermal
+ENV HOST=0.0.0.0
+ENV PORT=5174
+
+EXPOSE 5174
+CMD ["python", "serve_is3.py"]
