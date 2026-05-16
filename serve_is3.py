@@ -6,6 +6,8 @@ Endpoints:
   GET  /info?session=PRE            → {ready, total_frames, width, height, fps}
   GET  /frame?session=PRE&frame=0   → JPEG image
   GET  /predict?session=PRE&frame=0 → {landmarks, width, height, face_count}
+  POST /save                        → persist landmark coords to CSV
+  GET  /export?session=PRE          → download CSV as attachment
 
 Run locally:
   python emotion_picks/serve_is3.py
@@ -15,8 +17,10 @@ Deploy (Docker):
   Then upload IS3 files via the browser UI.
 """
 
+import csv
 import os
 import sys
+import threading
 
 # torch.compile on Windows requires MSVC (cl.exe); disable it to fall back to
 # plain eager mode when running locally without Visual Studio installed.
@@ -26,7 +30,7 @@ if sys.platform == "win32":
 import numpy as np
 import cv2
 from pathlib import Path
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, jsonify, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -47,6 +51,12 @@ _FALLBACK_PATHS = {
 
 _caps: dict[str, cv2.VideoCapture] = {}
 _fa = None  # FAN model — lazy-loaded on first /predict call
+
+# ── CSV persistence ───────────────────────────────────────────────────────────
+_PT_IDS  = list(range(31, 60))                    # landmark IDs stored in CSV
+_csv_data: dict[str, dict] = {}                   # {session: {frame: {pt_id: (x,y)}}}
+_csv_loaded: set            = set()               # sessions whose CSV has been read back
+_csv_lock                   = threading.Lock()
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -121,6 +131,57 @@ def _session_info(session: str) -> dict:
     }
 
 
+# ── CSV helpers ───────────────────────────────────────────────────────────────
+
+def _csv_path(session: str) -> Path:
+    return UPLOAD_DIR / f"{session}_landmarks.csv"
+
+
+def _csv_fieldnames() -> list[str]:
+    return ["session", "frame"] + [f"pt{i}_{c}" for i in _PT_IDS for c in ("x", "y")]
+
+
+def _load_csv(session: str) -> None:
+    """Populate _csv_data[session] from an existing CSV (called once per session)."""
+    _csv_data.setdefault(session, {})
+    path = _csv_path(session)
+    if not path.exists():
+        return
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                fi = int(row["frame"])
+                pts: dict[int, tuple[int, int]] = {}
+                for i in _PT_IDS:
+                    xs = row.get(f"pt{i}_x", "")
+                    ys = row.get(f"pt{i}_y", "")
+                    if xs and ys:
+                        try:
+                            pts[i] = (int(xs), int(ys))
+                        except ValueError:
+                            pass
+                _csv_data[session][fi] = pts
+    except Exception:
+        pass
+
+
+def _write_csv(session: str) -> None:
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    fieldnames = _csv_fieldnames()
+    with open(_csv_path(session), "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for fi in sorted(_csv_data[session]):
+            row: dict = {"session": session, "frame": fi}
+            for i in _PT_IDS:
+                if i in _csv_data[session][fi]:
+                    x, y = _csv_data[session][fi][i]
+                    row[f"pt{i}_x"], row[f"pt{i}_y"] = x, y
+                else:
+                    row[f"pt{i}_x"] = row[f"pt{i}_y"] = ""
+            w.writerow(row)
+
+
 # ── routes ────────────────────────────────────────────────────────────────────
 
 @app.post("/upload")
@@ -189,6 +250,48 @@ def predict():
         for i in range(31, 60)
     }
     return jsonify({"landmarks": landmarks, "face_count": len(detected), "width": w, "height": h})
+
+
+@app.post("/save")
+def save_landmarks():
+    data    = request.get_json(silent=True) or {}
+    session = data.get("session", "PRE").upper()
+    frame   = int(data.get("frame", 0))
+    lms     = data.get("landmarks", {})
+
+    info    = _session_info(session)
+    w, h    = info.get("width", 640), info.get("height", 480)
+
+    pts: dict[int, tuple[int, int]] = {}
+    for pid_str, coord in lms.items():
+        try:
+            pts[int(pid_str)] = (round(coord["x"] * w), round(coord["y"] * h))
+        except (KeyError, ValueError, TypeError):
+            pass
+
+    with _csv_lock:
+        if session not in _csv_loaded:
+            _load_csv(session)
+            _csv_loaded.add(session)
+        _csv_data.setdefault(session, {})[frame] = pts
+        _write_csv(session)
+        total = len(_csv_data[session])
+
+    return jsonify({"ok": True, "total_frames_saved": total})
+
+
+@app.get("/export")
+def export_landmarks():
+    session = request.args.get("session", "PRE").upper()
+    path = _csv_path(session)
+    if not path.exists():
+        return Response("No landmarks saved yet", status=404)
+    return send_file(
+        str(path.resolve()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"{session}_landmarks.csv",
+    )
 
 
 # ── main ──────────────────────────────────────────────────────────────────────

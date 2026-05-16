@@ -10,6 +10,8 @@ export default defineConfig({
       "/info":    "http://localhost:5174",
       "/predict": "http://localhost:5174",
       "/upload":  "http://localhost:5174",
+      "/save":    "http://localhost:5174",
+      "/export":  "http://localhost:5174",
     },
   },
 });

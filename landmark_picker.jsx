@@ -117,6 +117,9 @@ export default function App() {
   const [uploadState, setUploadState] = useState({ PRE: null, POST: null });
   const [dragOver,    setDragOver]    = useState(false);
 
+  // CSV auto-save
+  const [csvRows, setCsvRows] = useState(0);
+
   // view
   const [zoom, setZoom] = useState(1);
   const [pan,  setPan]  = useState({ x: 0, y: 0 });
@@ -133,6 +136,7 @@ export default function App() {
   const imgRef       = useRef(null);
   const wrapRef      = useRef(null);
   const histRef      = useRef([]);
+  const saveToCsvRef = useRef(null);
   const zoomRef      = useRef(1);
   const panRef       = useRef({ x: 0, y: 0 });
   const dragRef      = useRef({ active: false, moved: false, startX: 0, startY: 0, startPan: { x: 0, y: 0 } });
@@ -149,6 +153,21 @@ export default function App() {
   const sx      = nx => nx * wrapSize.w;
   const sy      = ny => ny * wrapSize.h;
   const upState = uploadState[session];
+
+  // ── CSV auto-save (fire-and-forget; also updates row counter) ────────────────
+  const saveToCsv = (c, sess = session, fi = frameIdx) => {
+    const lms = {};
+    POINTS.forEach(p => { if (c[p.id]) lms[p.id] = c[p.id]; });
+    fetch(`${SERVER}/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: sess, frame: fi, landmarks: lms }),
+    })
+      .then(r => r.json())
+      .then(d => { if (typeof d.total_frames_saved === "number") setCsvRows(d.total_frames_saved); })
+      .catch(() => {});
+  };
+  saveToCsvRef.current = saveToCsv;
 
   // ── view helpers ─────────────────────────────────────────────────────────────
   const resetView = () => {
@@ -168,6 +187,7 @@ export default function App() {
     setHistLen(histRef.current.length);
     setCoords(next);
     try { localStorage.setItem(storageKey(sess, fi), JSON.stringify(next)); } catch {}
+    saveToCsv(next, sess, fi);
   };
 
   const undo = () => {
@@ -177,6 +197,7 @@ export default function App() {
     setHistLen(histRef.current.length);
     setCoords(prev);
     try { localStorage.setItem(storageKey(session, frameIdx), JSON.stringify(prev)); } catch {}
+    saveToCsv(prev);
   };
 
   // ── session info ──────────────────────────────────────────────────────────────
@@ -241,6 +262,7 @@ export default function App() {
         setHistLen(histRef.current.length);
         setCoords(prev);
         try { localStorage.setItem(storageKey(session, frameIdx), JSON.stringify(prev)); } catch {}
+        saveToCsvRef.current?.(prev, session, frameIdx);
         return;
       }
       const step = e.shiftKey ? 10 : 1;
@@ -294,6 +316,7 @@ export default function App() {
       setHistLen(histRef.current.length);
       setCoords(norm);
       try { localStorage.setItem(storageKey(session, frameIdx), JSON.stringify(norm)); } catch {}
+      saveToCsv(norm);
       setSel(POINTS[0].id);
       setFanMsg(`FAN placed ${Object.keys(norm).length} pts — click any to correct`);
     } catch {
@@ -560,7 +583,7 @@ export default function App() {
                 {placed}/{TOTAL}
               </span>
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <button onClick={undo} disabled={histLen === 0}
                 style={{ ...btnStyle(), opacity: histLen === 0 ? .3 : 1 }}
                 title="Ctrl+Z">
@@ -570,6 +593,29 @@ export default function App() {
               <button onClick={exportJSON} disabled={placed === 0} style={btnStyle()}>
                 {copied ? "Copied ✓" : "Export JSON ↓"}
               </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 4,
+                borderLeft: `1px solid ${T.border}`, paddingLeft: 10 }}>
+                {csvRows > 0 && (
+                  <span style={{ fontSize: 10, color: T.muted }}>
+                    {csvRows} row{csvRows !== 1 ? "s" : ""} saved
+                  </span>
+                )}
+                <button
+                  onClick={() => {
+                    const a = document.createElement("a");
+                    a.href = `${SERVER}/export?session=${session}`;
+                    a.download = `${session}_landmarks.csv`;
+                    a.click();
+                  }}
+                  disabled={csvRows === 0}
+                  title="Download all saved landmarks as CSV"
+                  style={{ ...btnStyle({ fontWeight: 600 }),
+                    background: csvRows > 0 ? T.accent : T.btn,
+                    color: csvRows > 0 ? "#fff" : T.muted,
+                    border: "none", opacity: csvRows === 0 ? .4 : 1 }}>
+                  ⏹ End & CSV
+                </button>
+              </div>
             </div>
           </div>
 
