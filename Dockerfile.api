@@ -14,11 +14,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the FAN model (~90 MB) into the image layer so first /predict is instant
-RUN python -c "
-import face_alignment
-fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, device='cpu')
-print('FAN model cached.')
-"
+RUN python -c "import face_alignment; fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, device='cpu'); print('FAN model cached.')"
 
 COPY serve_is3.py ./
 
