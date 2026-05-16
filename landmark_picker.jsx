@@ -691,7 +691,7 @@ export default function App() {
                       return poly ? (
                         <polygon key={g.id} points={poly}
                           fill={palette[g.id] + "18"} stroke={palette[g.id]}
-                          strokeWidth="1.5" strokeLinejoin="round" />
+                          strokeWidth={1.5 / zoom} strokeLinejoin="round" />
                       ) : null;
                     })}
 
@@ -700,16 +700,19 @@ export default function App() {
                       const cx = sx(coords[pt.id].x), cy = sy(coords[pt.id].y);
                       const isSel = pt.id === sel;
                       const col   = palette[pt.g];
+                      const z     = zoom;
+                      const r     = (isSel ? 7 : 5) / z;
+                      const sw    = 1.5 / z;
                       return (
                         <g key={pt.id}>
                           {isSel && (
-                            <circle cx={cx} cy={cy} r="13" fill="none" stroke={col}
-                              strokeWidth="1.5" strokeDasharray="3,2" opacity=".9" />
+                            <circle cx={cx} cy={cy} r={13 / z} fill="none" stroke={col}
+                              strokeWidth={sw} strokeDasharray={`${3/z},${2/z}`} opacity=".9" />
                           )}
-                          <circle cx={cx} cy={cy} r={isSel ? 7 : 5} fill={col}
-                            stroke="rgba(255,255,255,.85)" strokeWidth="1.5" />
+                          <circle cx={cx} cy={cy} r={r} fill={col}
+                            stroke="rgba(255,255,255,.85)" strokeWidth={sw} />
                           <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central"
-                            style={{ fontSize: "8px", fill: "#fff", fontWeight: 700,
+                            style={{ fontSize: `${8 / z}px`, fill: "#fff", fontWeight: 700,
                               fontFamily: "monospace", pointerEvents: "none" }}>
                             {pt.id}
                           </text>
